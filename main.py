@@ -1,12 +1,12 @@
 import os
 import pickle
+import base64
+
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
-import base64
-import email
-from email.mime.text import MIMEText
+from extract import setup_database, extract_data_from_html, save_to_database, export_to_excel
 
 # Define the scopes
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
@@ -82,36 +82,43 @@ def get_message_details(service, msg_id, user_id='me'):
         message = service.users().messages().get(
             userId=user_id, id=msg_id).execute()
         
+        
+        
         # Extract header data
         headers = message['payload']['headers']
         payload = message['payload']
-        parts = payload.get('parts')
+        parts = message['payload'].get('parts')
+        
         subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), 'No Subject')
         sender = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown')
         date = next((h['value'] for h in headers if h['name'].lower() == 'date'), 'Unknown')
         
+        
+        print('-' * 40)
         print(f'From: {sender}')
         print(f'Subject: {subject}')
         print(f'Date: {date}')
         print('-' * 40)
         
-        # Extract and print body
-        print("\nBody:")
         if parts:
-            for part in parts:
+            for index, part in enumerate(parts):
                 if part['mimeType'] == 'text/plain':
-                    data = part['body']['data']
-                    decoded_data = base64.urlsafe_b64decode(data).decode()
-                    print(decoded_data)
+                    continue
+                    # data = part['body']['data']
+                    # decoded_data = base64.urlsafe_b64decode(data).decode()
+                    # print(decoded_data)
                 elif part['mimeType'] == 'text/html': #handle html emails
                     data = part['body']['data']
                     decoded_data = base64.urlsafe_b64decode(data).decode()
-                    print(decoded_data)
+                    with open('info.html', 'w', encoding="utf-8") as file:
+                        file.write(decoded_data)
         elif payload['mimeType'] == 'text/plain': #handles emails without parts
+            print('No parts found: text/plain')
             data = payload['body']['data']
             decoded_data = base64.urlsafe_b64decode(data).decode()
             print(decoded_data)
         elif payload['mimeType'] == 'text/html':
+            print('No parts found: text/html')
             data = payload['body']['data']
             decoded_data = base64.urlsafe_b64decode(data).decode()
             print(decoded_data)
@@ -123,16 +130,24 @@ def get_message_details(service, msg_id, user_id='me'):
         return None
 
 def main():
-    # Get Gmail API service
-    service = get_gmail_service()
+    # # Get Gmail API service
+    # service = get_gmail_service()
     
-    # List recent messages
-    messages = list_msg_with_title(service)
+    # # List recent messages
+    # messages = list_msg_with_title(service)
     
-    # Get details for each message
-    for message in messages[:5]:  # Limit to first 5 for demonstration
-        print('\nRetrieving message...')
-        get_message_details(service, message['id'])
+    # # Get details for each message
+    # for message in messages[:5]:  # Limit to first 5 for demonstration
+    #     print('\nRetrieving message...')
+    #     get_message_details(service, message['id'])
+    
+    setup_database()
+    with open("info.html", "r", encoding="utf-8") as file:
+        html_content = file.read()
+    customer, order, products, order_items = extract_data_from_html(html_content)
+    save_to_database(customer, order, products, order_items)
+    export_to_excel()
+    print("Data extracted, saved, and exported to Excel.")
 
 if __name__ == '__main__':
     main()
