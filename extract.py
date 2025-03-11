@@ -1,6 +1,7 @@
 import sqlite3
 import pandas as pd
 from bs4 import BeautifulSoup
+import re
 
 # Database setup
 def setup_database():
@@ -43,56 +44,172 @@ def setup_database():
     conn.commit()
     conn.close()
 
+
+def find_target_table(soup, target_text="PO Number"):
+    
+    # Find all h5 elements containing the target text
+    h5_elements = soup.find_all('h5', string=lambda text: target_text in text if text else False)
+    
+    for h5 in h5_elements:
+        # Navigate up the DOM: h5 -> td -> tr -> tbody -> table
+        td_parent = h5.find_parent('td')
+        if not td_parent:
+            continue
+            
+        tr_parent = td_parent.find_parent('tr')
+        if not tr_parent:
+            continue
+            
+        tbody_parent = tr_parent.find_parent('tbody')
+        if not tbody_parent:
+            continue
+            
+        table_parent = tbody_parent.find_parent('table')
+        if not table_parent:
+            continue
+            
+        # Check if this table doesn't contain other tables
+        if not table_parent.find('table'):
+            return table_parent
+    
+    return None
+
+
+def extract_order_data(soup):
+    
+    # Find the h5 element with "PO Number" and navigate to the inner table
+    inner_table = find_target_table(soup, target_text="PO Number")
+    # Get all header elements (first row)
+    header_row = inner_table.find('tr')
+    headers = [h5.get_text().strip() for h5 in header_row.find_all('h5')]
+    
+    # Get the data row (second row)
+    data_row = header_row.find_next_sibling('tr')
+    data_cells = data_row.find_all('td')
+    
+    # Extract values for each field
+    order_data = {
+        "po_number": "",
+        "customer_name": "",
+        "sold_on": "",
+        "must_ship_by": "",
+        "ship_method": "",
+        "delivery_type": "",
+        "payment_method": ""
+    }
+    
+    # Map headers to values
+    header_to_value_map = {}
+    for i, header in enumerate(headers):
+        # Get all h5 texts in the corresponding data cell
+        cell_texts = [h.get_text().strip() for h in data_cells[i].find_all('h5') if h.get_text().strip()]
+        # Join non-empty texts with space
+        value = " ".join(cell_texts)
+        header_to_value_map[header] = value
+    
+    # Populate the order_data dictionary
+    order_data["po_number"] = header_to_value_map.get("PO Number", "")
+    order_data["sold_on"] = header_to_value_map.get("Sold On", "")
+    order_data["must_ship_by"] = header_to_value_map.get("Must Ship By", "")
+    order_data["ship_method"] = header_to_value_map.get("Ship Method", "")
+    order_data["delivery_type"] = header_to_value_map.get("Delivery Type", "")
+    order_data["payment_method"] = header_to_value_map.get("Payment Method", "")
+    
+    # Special case for customer_name (assuming "Sold On" value is the customer name)
+    order_data["customer_name"] = header_to_value_map.get("Sold On", "")
+    
+    return order_data
+
+
+
+def extract_customer_data(soup):
+    # Find the h5 element with "PO Number" and navigate to the inner table
+    inner_table = find_target_table(soup, target_text="Account # / Customer #")
+    # Find the "Customer" column index first
+    headers_row = inner_table.find('tr')
+    headers = headers_row.find_all('td')
+    
+    customer_col_idx = None
+    ship_to_col_idx = None
+    
+    for idx, header in enumerate(headers):
+        header_text = header.find('h5').get_text().strip()
+        if header_text == "Customer":
+            customer_col_idx = idx
+        elif header_text == "Ship To":
+            ship_to_col_idx = idx
+    
+    if customer_col_idx is None and ship_to_col_idx is None:
+        return {"name": "", "address": "", "phone_number": "", "email_address": ""}
+    
+    # Get the data row
+    data_row = headers_row.find_next_sibling('tr')
+    data_cells = data_row.find_all('td')
+    
+    # Initialize customer data
+    customer_data = {
+        "name": "",
+        "address": "",
+        "phone_number": "",
+        "email_address": ""
+    }
+    
+    # Try to extract from Customer column first, then Ship To if needed
+    primary_col_idx = customer_col_idx if customer_col_idx is not None else ship_to_col_idx
+    cell = data_cells[primary_col_idx]
+    
+    # Get all h5 elements in the cell
+    h5_elements = cell.find_all('h5')
+    h5_texts = [h.get_text().strip() for h in h5_elements]
+    non_empty_h5s = [text for text in h5_texts if text]
+    
+    # Extract name - usually the first non-empty h5
+    if non_empty_h5s:
+        customer_data["name"] = non_empty_h5s[0]
+    # Extract address - usually the next 2-3 non-empty h5s joined together
+
+    stripped_address_components = [re.sub(r'\s{2,}', ' ', s).strip() for s in non_empty_h5s[1:]]
+    customer_data["address"] = ", ".join(stripped_address_components)
+    
+    # If we didn't get complete information, check the Ship To column
+    if customer_col_idx is not None and ship_to_col_idx is not None:
+        ship_to_cell = data_cells[ship_to_col_idx]
+        ship_to_h5s = [h.get_text().strip() for h in ship_to_cell.find_all('h5')]
+        non_empty_ship_to_h5s = [text for text in ship_to_h5s if text]
+        
+        # Look for phone and email in the Ship To column
+        for text in non_empty_ship_to_h5s:
+            # Simple checks for phone number (all digits or with some formatting)
+            if text.replace("-", "").replace("(", "").replace(")", "").replace(" ", "").replace("+", "").isdigit():
+                customer_data["phone_number"] = text
+            # Simple check for email
+            elif "@" in text and "." in text:
+                customer_data["email_address"] = text
+    
+    return customer_data
+
 # Function to extract data from HTML
 def extract_data_from_html(html_content):
     soup = BeautifulSoup(html_content, "html.parser")
-
-    # Extract order details
-    tables = soup.find_all("table")
-    order_table = None
-    for table in tables:
-        if "PO Number" in table.get_text():
-            order_table = table
-            break
-    # order_table = soup.find("table", text=lambda x: x and "PO Number" in x)
-    order_rows = order_table.find_all("tr")[1] if order_table else []
-    order_data = {
-        "po_number": order_rows.find_all("td")[0].text.strip(),
-        "customer_name": order_rows.find_all("td")[1].text.strip(),
-        "sold_on": order_rows.find_all("td")[2].text.strip(),
-        "must_ship_by": order_rows.find_all("td")[3].text.strip(),
-        "ship_method": order_rows.find_all("td")[4].text.strip(),
-        "delivery_type": order_rows.find_all("td")[5].text.strip(),
-        "payment_method": order_rows.find_all("td")[6].text.strip()
-    }
-    
-    # Extract customer details
-    ship_to_table = soup.find("table", text=lambda x: x and "Ship To" in x)
-    ship_to_rows = ship_to_table.find_all("tr")[1] if ship_to_table else []
-    customer_data = {
-        "name": ship_to_rows.find_all("td")[0].text.strip(),
-        "address": ship_to_rows.find_all("td")[1].text.strip(),
-        "phone_number": ship_to_rows.find_all("td")[2].text.strip(),
-        "email_address": ship_to_rows.find_all("td")[3].text.strip()
-    }
-    
-    # Extract products and order items
-    products = []
-    order_items = []
-    product_table = soup.find("table", text=lambda x: x and "Item Code" in x)
-    if product_table:
-        product_rows = product_table.find_all("tr")[1:]
-        for row in product_rows:
-            cols = row.find_all("td")
-            item_code = cols[1].text.strip()
-            description = cols[2].text.strip()
-            quantity = int(cols[0].text.strip())
-            price = float(cols[5].text.strip().replace("$", ""))
+    order_table  = extract_order_data(soup=soup)
+    customer_data = extract_customer_data(soup=soup)
+    # # Extract products and order items
+    # products = []
+    # order_items = []
+    # product_table = soup.find("table", text=lambda x: x and "Item Code" in x)
+    # if product_table:
+    #     product_rows = product_table.find_all("tr")[1:]
+    #     for row in product_rows:
+    #         cols = row.find_all("td")
+    #         item_code = cols[1].text.strip()
+    #         description = cols[2].text.strip()
+    #         quantity = int(cols[0].text.strip())
+    #         price = float(cols[5].text.strip().replace("$", ""))
             
-            products.append({"item_code": item_code, "description": description})
-            order_items.append({"order_po_number": order_data["po_number"], "product_item_code": item_code, "quantity": quantity, "price": price})
+    #         products.append({"item_code": item_code, "description": description})
+    #         order_items.append({"order_po_number": order_data["po_number"], "product_item_code": item_code, "quantity": quantity, "price": price})
     
-    return customer_data, order_data, products, order_items
+    # return customer_data, order_data, products, order_items
 
 # Function to save data to SQLite
 def save_to_database(customer, order, products, order_items):
