@@ -44,3 +44,5 @@ profile.json
 
 token.pickle
 credentials.json
+email_inventory/
+orders.db
