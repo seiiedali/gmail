@@ -75,7 +75,7 @@ def find_target_table(soup, target_text="PO Number"):
     return None
 
 
-def extract_order_data(soup):
+def extract_order(soup, customer_name):
     
     # Find the h5 element with "PO Number" and navigate to the inner table
     inner_table = find_target_table(soup, target_text="PO Number")
@@ -115,14 +115,13 @@ def extract_order_data(soup):
     order_data["delivery_type"] = header_to_value_map.get("Delivery Type", "")
     order_data["payment_method"] = header_to_value_map.get("Payment Method", "")
     
-    # Special case for customer_name (assuming "Sold On" value is the customer name)
-    order_data["customer_name"] = header_to_value_map.get("Sold On", "")
+    order_data["customer_name"] = customer_name
     
     return order_data
 
 
 
-def extract_customer_data(soup):
+def extract_customer(soup):
     # Find the h5 element with "PO Number" and navigate to the inner table
     inner_table = find_target_table(soup, target_text="Account # / Customer #")
     # Find the "Customer" column index first
@@ -188,28 +187,66 @@ def extract_customer_data(soup):
     
     return customer_data
 
-# Function to extract data from HTML
+
+def extract_products_and_order_items(soup, po_number):
+    """
+    Extract product and order item information from HTML table.
+    
+    Args:
+        soup (BeautifulSoup): Parsed HTML content holding the table
+        po_number (str): Purchase Order Number to include in order items
+        
+    Returns:
+        tuple: (products list, order_items list)
+    """
+    # Initialize lists
+    products = []
+    order_items = []
+    
+    # Find all rows except the header row
+    inner_table = find_target_table(soup, target_text="Item Code")
+    rows = inner_table.find_all('tr')[1:]
+    
+    # Extract data from each row
+    for row in rows:
+        # Get all cells in the row
+        cells = row.find_all('td')
+        
+        # Extract data from cells
+        quantity = cells[0].find('h5').text.strip()
+        item_code = cells[1].find_all('h5')[0].text.strip()  # First h5 in second cell
+        description = re.sub(r'\s{2,}', ' ', cells[2].find('h5').text).strip()
+        price = cells[5].find('h5').text.strip()
+        
+        # Clean price (remove $ and convert to float)
+        price_cleaned = float(price.replace('$', ''))
+        
+        # Append to products list if not already present
+        product_exists = any(p['item_code'] == item_code for p in products)
+        if not product_exists:
+            products.append({
+                "item_code": item_code,
+                "description": description
+            })
+        
+        # Append to order_items list
+        order_items.append({
+            "order_po_number": po_number,
+            "product_item_code": item_code,
+            "quantity": int(quantity),
+            "price": price_cleaned
+        })
+    
+    return products, order_items
+
+
 def extract_data_from_html(html_content):
     soup = BeautifulSoup(html_content, "html.parser")
-    order_table  = extract_order_data(soup=soup)
-    customer_data = extract_customer_data(soup=soup)
-    # # Extract products and order items
-    # products = []
-    # order_items = []
-    # product_table = soup.find("table", text=lambda x: x and "Item Code" in x)
-    # if product_table:
-    #     product_rows = product_table.find_all("tr")[1:]
-    #     for row in product_rows:
-    #         cols = row.find_all("td")
-    #         item_code = cols[1].text.strip()
-    #         description = cols[2].text.strip()
-    #         quantity = int(cols[0].text.strip())
-    #         price = float(cols[5].text.strip().replace("$", ""))
-            
-    #         products.append({"item_code": item_code, "description": description})
-    #         order_items.append({"order_po_number": order_data["po_number"], "product_item_code": item_code, "quantity": quantity, "price": price})
-    
-    # return customer_data, order_data, products, order_items
+    customer = extract_customer(soup=soup)
+    order  = extract_order(soup=soup, customer_name=customer["name"])
+    products, order_items = extract_products_and_order_items(soup=soup, po_number=order["po_number"])
+    return customer, order, products, order_items
+
 
 # Function to save data to SQLite
 def save_to_database(customer, order, products, order_items):
@@ -250,9 +287,31 @@ def export_to_excel():
     products_df = pd.read_sql_query("SELECT * FROM products", conn)
     orders_df = pd.read_sql_query("SELECT * FROM orders", conn)
     
+    # Query to get orders count and sum of product quantity for each customer
+    orders_count_df = pd.read_sql_query("""
+        SELECT customer_name, COUNT(*) as orders_count
+        FROM orders
+        GROUP BY customer_name
+    """, conn)
+    
+    product_quantity_sum_df = pd.read_sql_query("""
+        SELECT o.customer_name, SUM(oi.quantity) as total_product_quantity
+        FROM orders o
+        JOIN order_items oi ON o.po_number = oi.order_po_number
+        GROUP BY o.customer_name
+    """, conn)
+    
+    # Merge the data with customers DataFrame
+    customers_df = customers_df.merge(orders_count_df, left_on="name", right_on="customer_name", how="left")
+    customers_df = customers_df.merge(product_quantity_sum_df, left_on="name", right_on="customer_name", how="left")
+    
+    # Drop the extra customer_name columns from the merge
+    customers_df = customers_df.drop(columns=["customer_name_x", "customer_name_y"])
+    
     with pd.ExcelWriter("exported_data.xlsx") as writer:
         customers_df.to_excel(writer, sheet_name="Customers", index=False)
         products_df.to_excel(writer, sheet_name="Products", index=False)
         orders_df.to_excel(writer, sheet_name="Orders", index=False)
     
     conn.close()
+
