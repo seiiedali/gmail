@@ -46,3 +46,4 @@ token.pickle
 credentials.json
 email_inventory/
 orders.db
+exported_data.xlsx
