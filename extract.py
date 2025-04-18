@@ -41,6 +41,18 @@ def setup_database():
         FOREIGN KEY (product_item_code) REFERENCES products(item_code)
     )''')
     
+    # New table to track processed emails
+    cursor.execute('''CREATE TABLE IF NOT EXISTS processed_emails (
+        message_id TEXT PRIMARY KEY,
+        processed_at TEXT
+    )''')
+    
+    # New table to log extraction calls
+    cursor.execute('''CREATE TABLE IF NOT EXISTS extraction_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT
+    )''')
+    
     conn.commit()
     conn.close()
 
@@ -219,7 +231,7 @@ def extract_products_and_order_items(soup, po_number):
         price = cells[5].find('h5').text.strip()
         
         # Clean price (remove $ and convert to float)
-        price_cleaned = float(price.replace('$', ''))
+        price_cleaned = float(price.replace('$', '').replace(',', ''))
         
         # Append to products list if not already present
         product_exists = any(p['item_code'] == item_code for p in products)
