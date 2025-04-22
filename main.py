@@ -34,7 +34,7 @@ def get_gmail_service():
 
 
 def list_msg_with_title(
-    service, user_id="me", max_results=10, title="Action Required: PO"
+    service, user_id="me", max_results=900, title="Action Required: PO"
 ):
     """List messages with the specified title, excluding already processed ones."""
     try:
