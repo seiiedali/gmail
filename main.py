@@ -33,9 +33,7 @@ def get_gmail_service():
     return build("gmail", "v1", credentials=creds)
 
 
-def list_msg_with_title(
-    service, user_id="me", max_results=900, title="Action Required: PO"
-):
+def list_msg_with_title(service, user_id="me", title="Action Required: PO", limit=None):
     """List messages with the specified title, excluding already processed ones."""
     try:
         # Fetch already processed email IDs from the database
@@ -45,22 +43,43 @@ def list_msg_with_title(
         processed_ids = {row[0] for row in cursor.fetchall()}
         conn.close()
 
-        # Fetch messages from Gmail
-        response = (
-            service.users()
-            .messages()
-            .list(userId=user_id, maxResults=max_results, q=f'subject:"{title}"')
-            .execute()
-        )
-        messages = response.get("messages", [])
-        if not messages:
-            print("No messages found.")
-            return []
+        new_messages = []
+        page_token = None
 
-        # Filter out already processed messages
-        new_messages = [msg for msg in messages if msg["id"] not in processed_ids]
+        while True:
+            response = (
+                service.users()
+                .messages()
+                .list(
+                    userId=user_id,
+                    maxResults=500,  # API hard limit
+                    q=f'subject:"{title}"',
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+
+            messages = response.get("messages", [])
+            if not messages:
+                break
+
+            # Filter out already processed messages
+            for msg in messages:
+                if msg["id"] not in processed_ids:
+                    new_messages.append(msg)
+
+            # Stop if we hit the requested limit
+            if limit and len(new_messages) >= limit:
+                new_messages = new_messages[:limit]
+                break
+
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+
         print(f"Found {len(new_messages)} new messages.")
         return new_messages
+
     except Exception as error:
         print(f"An error occurred: {error}")
         return []
